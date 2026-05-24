@@ -15,7 +15,7 @@ if not os.path.exists(DB_FILE):
     st.stop()
 
 # Helper function to load data
-@st.cache_data
+@st.cache_data(ttl=600) # Cache for 10 minutes
 def load_data():
     conn = sqlite3.connect(DB_FILE)
     df = pd.read_sql_query("SELECT * FROM runway_usage", conn)
