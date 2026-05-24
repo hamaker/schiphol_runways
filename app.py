@@ -101,17 +101,15 @@ def merge_slots(df):
     return pd.DataFrame(merged)
 
 # Helper function for analytics
-def inject_analytics():
+def inject_analytics(path):
     # In Streamlit, this runs in an iframe. We use the JS script AND an image pixel fallback.
     # We dynamically pass the current page URL to the pixel to ensure it's tracked even in the iframe.
-    current_page = st.navigation.get_current_page().url_path
     analytics_code = f"""
     <script data-goatcounter="https://schiphol-runways.goatcounter.com/count"
             async src="https://gc.zgo.at/count.js"></script>
-    <img src="https://schiphol-runways.goatcounter.com/count?p=/{current_page}" style="display:none">
+    <img src="https://schiphol-runways.goatcounter.com/count?p=/{path}" style="display:none">
     """
     st.components.v1.html(analytics_code, height=1)
-
 
 # Helper function for data freshness display
 def toon_laatste_update():
@@ -123,7 +121,7 @@ def toon_laatste_update():
 # --- Page Functions ---
 
 def overview_page():
-    inject_analytics()
+    inject_analytics("overzicht")
     st.title("Schiphol Baangebruik Overzicht")
     toon_laatste_update()
     st.markdown("Visualiseer de algemene baanactiviteit op basis van gegevens van `bezoekbas.nl`.")
@@ -235,7 +233,7 @@ def overview_page():
         st.write("Geen gegevens beschikbaar voor de huidige filters.")
 
 def runway_detail_page(runway_name):
-    inject_analytics()
+    inject_analytics(runway_name.replace(" ", "_"))
     st.title(f"{runway_name}")
     toon_laatste_update()
     
