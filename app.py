@@ -172,6 +172,36 @@ def overview_page():
     display_cols = ['date', 'start_time', 'end_time', 'operation', 'runway_name', 'direction', 'post_date']
     st.dataframe(filtered_df[display_cols], use_container_width=True)
 
+    st.subheader("Daily Summary")
+    if not filtered_df.empty:
+        min_date_val = filtered_df['date'].min()
+        max_date_val = filtered_df['date'].max()
+        
+        # Determine the effective today for the overview
+        effective_today = date(2026, 5, 24)
+        if max_date_val < effective_today:
+            max_date_val = effective_today
+            
+        full_range = [max_date_val - timedelta(days=x) for x in range((max_date_val - min_date_val).days + 1)]
+        
+        for d in full_range:
+            date_display = f"{d.strftime('%d %B %Y')}"
+            if d == effective_today:
+                date_display += " (Today)"
+            
+            st.markdown(f"#### {date_display}")
+            day_data = filtered_df[filtered_df['date'] == d]
+            
+            if not day_data.empty:
+                # Group by runway and operation for a compact summary
+                summary = day_data.groupby(['runway_name', 'operation']).size().reset_index()
+                for _, row in summary.iterrows():
+                    st.write(f"- **{row['runway_name']}**: {row['operation']}")
+            else:
+                st.write("*No activity recorded for the selected filters.*")
+    else:
+        st.write("No data available for the current filters.")
+
     if not filtered_df.empty:
         st.subheader("Usage Frequency by Runway")
         usage_counts = filtered_df.groupby(['runway_name', 'operation']).size().reset_index(name='count')
@@ -185,16 +215,15 @@ def runway_detail_page(runway_name):
     
     st.write(f"Showing historical usage for the **{runway_name}**.")
     
-    # Today's slots
-    today_df = runway_df[runway_df['date'] == today]
-    today_slots = merge_slots(today_df)
-    
+    # --- Today's Section ---
     st.markdown(f"### Today ({today.strftime('%d %B %Y')})")
-    if not today_slots.empty:
+    today_df = runway_df[runway_df['date'] == today]
+    
+    if not today_df.empty:
+        today_slots = merge_slots(today_df)
         chart = plot_runway_timeline(today_slots, today)
         if chart:
             st.altair_chart(chart, use_container_width=True)
-            
         for _, row in today_slots.iterrows():
             st.write(f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
     else:
@@ -202,25 +231,33 @@ def runway_detail_page(runway_name):
     
     st.divider()
     
-    # Past slots
-    past_df = runway_df[runway_df['date'] != today]
-    
-    if not past_df.empty:
-        # Group by date and merge within each date
-        dates = sorted(past_df['date'].unique(), reverse=True)
-        for d in dates:
+    # --- Historical Section ---
+    min_date_val = runway_df['date'].min()
+    yesterday = today - timedelta(days=1)
+
+    if min_date_val and min_date_val <= yesterday:
+        # Create a full range of dates from yesterday down to the oldest record
+        full_date_range = [yesterday - timedelta(days=x) for x in range((yesterday - min_date_val).days + 1)]
+
+        for d in full_date_range:
             st.markdown(f"### {d.strftime('%d %B %Y')}")
-            day_df = past_df[past_df['date'] == d]
-            merged_day_slots = merge_slots(day_df)
-            
-            chart = plot_runway_timeline(merged_day_slots, d)
-            if chart:
-                st.altair_chart(chart, use_container_width=True)
-                
-            for _, row in merged_day_slots.iterrows():
-                st.write(f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
+            day_df = runway_df[runway_df['date'] == d]
+
+            if not day_df.empty:
+                merged_day_slots = merge_slots(day_df)
+                chart = plot_runway_timeline(merged_day_slots, d)
+                if chart:
+                    st.altair_chart(chart, use_container_width=True)
+                for _, row in merged_day_slots.iterrows():
+                    st.write(f"- **{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
+            else:
+                st.write("*No runway usage recorded for this date.*")
+    elif min_date_val == today:
+        # Only today has data, no past data to show
+        pass
     else:
         st.write("No historical data available for this runway.")
+
 
 # --- Navigation Setup ---
 
