@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
-from datetime import date, datetime
+import altair as alt
+from datetime import date, datetime, timedelta
 
 # Configuration
 DB_FILE = "runway_data.db"
@@ -23,6 +24,87 @@ def load_data():
     return df
 
 df = load_data()
+
+# Helper function to create timeline chart
+def plot_runway_timeline(df, plot_date):
+    if df.empty:
+        return None
+    
+    # Prepare data for plotting
+    plot_df = df.copy()
+    
+    # Convert HH:MM to datetime objects for the specific date
+    base_dt = datetime.combine(plot_date, datetime.min.time())
+    
+    def to_dt(t_str):
+        try:
+            h, m = map(int, t_str.split(':'))
+            return base_dt + timedelta(hours=h, minutes=m)
+        except:
+            return base_dt
+
+    plot_df['start_dt'] = plot_df['start_time'].apply(to_dt)
+    plot_df['end_dt'] = plot_df['end_time'].apply(to_dt)
+    
+    # Handle the 23:59 edge case
+    plot_df.loc[plot_df['end_time'] == '23:59', 'end_dt'] += timedelta(minutes=1)
+
+    chart = alt.Chart(plot_df).mark_bar(
+        opacity=0.8, 
+        stroke='white', 
+        strokeWidth=1,
+        size=30
+    ).encode(
+        x=alt.X('start_dt:T', 
+                title='Time',
+                scale=alt.Scale(domain=[base_dt, base_dt + timedelta(days=1)]),
+                axis=alt.Axis(format='%H:%M', tickCount=24)),
+        x2='end_dt:T',
+        y=alt.value(0), # Position the bars at the top
+        color=alt.Color('operation:N', 
+                        scale=alt.Scale(domain=['Landing', 'Takeoff'], 
+                                       range=['#1f77b4', '#ff7f0e']),
+                        legend=alt.Legend(title="Operation")),
+        tooltip=[
+            alt.Tooltip('start_time', title='Start'),
+            alt.Tooltip('end_time', title='End'),
+            alt.Tooltip('operation', title='Operation'),
+            alt.Tooltip('direction', title='Direction')
+        ]
+    ).properties(
+        height=100, # Set a small height for the data area
+        width='container'
+    )
+    
+    return chart
+
+def merge_slots(df):
+    """Merges adjacent time slots with the same operation and direction."""
+    if df.empty:
+        return df
+    
+    # Sort by start time to ensure adjacency check works
+    df = df.sort_values('start_time').reset_index(drop=True)
+    
+    merged = []
+    if not df.empty:
+        curr = df.iloc[0].to_dict()
+        
+        for i in range(1, len(df)):
+            nxt = df.iloc[i].to_dict()
+            
+            # Check if adjacent AND same operation/direction
+            if (curr['end_time'] == nxt['start_time'] and 
+                curr['operation'] == nxt['operation'] and 
+                curr['direction'] == nxt['direction']):
+                # Merge: update current end time to next end time
+                curr['end_time'] = nxt['end_time']
+            else:
+                merged.append(curr)
+                curr = nxt
+        merged.append(curr)
+        
+    return pd.DataFrame(merged)
 
 # --- Page Functions ---
 
@@ -95,34 +177,6 @@ def overview_page():
         usage_counts = filtered_df.groupby(['runway_name', 'operation']).size().reset_index(name='count')
         st.bar_chart(usage_counts, x="runway_name", y="count", color="operation", use_container_width=True)
 
-def merge_slots(df):
-    """Merges adjacent time slots with the same operation and direction."""
-    if df.empty:
-        return df
-    
-    # Sort by start time to ensure adjacency check works
-    df = df.sort_values('start_time').reset_index(drop=True)
-    
-    merged = []
-    if not df.empty:
-        curr = df.iloc[0].to_dict()
-        
-        for i in range(1, len(df)):
-            nxt = df.iloc[i].to_dict()
-            
-            # Check if adjacent AND same operation/direction
-            if (curr['end_time'] == nxt['start_time'] and 
-                curr['operation'] == nxt['operation'] and 
-                curr['direction'] == nxt['direction']):
-                # Merge: update current end time to next end time
-                curr['end_time'] = nxt['end_time']
-            else:
-                merged.append(curr)
-                curr = nxt
-        merged.append(curr)
-        
-    return pd.DataFrame(merged)
-
 def runway_detail_page(runway_name):
     st.title(f"{runway_name}")
     
@@ -137,10 +191,14 @@ def runway_detail_page(runway_name):
     
     st.markdown(f"### Today ({today.strftime('%d %B %Y')})")
     if not today_slots.empty:
+        chart = plot_runway_timeline(today_slots, today)
+        if chart:
+            st.altair_chart(chart, use_container_width=True)
+            
         for _, row in today_slots.iterrows():
             st.write(f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
     else:
-        st.info(f"No slots found for {runway_name} today.")
+        st.info(f"A quiet day: No slots found for {runway_name} today.")
     
     st.divider()
     
@@ -154,8 +212,13 @@ def runway_detail_page(runway_name):
             st.markdown(f"### {d.strftime('%d %B %Y')}")
             day_df = past_df[past_df['date'] == d]
             merged_day_slots = merge_slots(day_df)
+            
+            chart = plot_runway_timeline(merged_day_slots, d)
+            if chart:
+                st.altair_chart(chart, use_container_width=True)
+                
             for _, row in merged_day_slots.iterrows():
-                st.write(f"- **{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
+                st.write(f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
     else:
         st.write("No historical data available for this runway.")
 
