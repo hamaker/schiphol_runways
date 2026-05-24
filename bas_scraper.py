@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+import sqlite3
 from datetime import datetime, timedelta
 import re
 from html import unescape
@@ -10,6 +11,7 @@ BASE_LIST_URL = "https://bezoekbas.nl/wp-json/zmp_toolbox_blocks/v1/get_block_da
 BASE_DETAIL_URL = "https://bezoekbas.nl/wp-json/zmp_toolbox_blocks/v1/get_page_by_slug/?slug={slug}"
 STATE_FILE = "runway_state.json"
 OUTPUT_FILE = "runway_usage.md"
+DB_FILE = "runway_data.db"
 
 # Browser-like headers to avoid 403 errors
 HEADERS = {
@@ -18,6 +20,29 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://bezoekbas.nl/home/actuele-informatie",
 }
+
+def init_db():
+    """Initializes the SQLite database."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='runway_usage'")
+    if not cursor.fetchone():
+        cursor.execute('''
+            CREATE TABLE runway_usage (
+                date TEXT,
+                start_time TEXT,
+                end_time TEXT,
+                operation TEXT,
+                runway_name TEXT,
+                direction TEXT,
+                post_date TEXT,
+                slug TEXT,
+                PRIMARY KEY (date, start_time, end_time, operation, runway_name, direction)
+            )
+        ''')
+    conn.commit()
+    return conn
 
 def clean_html(html):
     """Removes HTML tags and decodes entities."""
@@ -39,9 +64,64 @@ def extract_runway_info(html_content):
     
     return refined_items
 
+def parse_usage_line(current_date, slot_time, description):
+    """Parses a description into structured records, handling midnight crossings."""
+    time_match = re.search(r'(\d{2}:\d{2}) tot (\d{2}:\d{2})', slot_time)
+    if not time_match:
+        return [], current_date
+
+    start_t, end_t = time_match.group(1), time_match.group(2)
+    
+    # Logic to detect if we've crossed into the next day
+    # If end_time < start_time, it crosses midnight.
+    # Also, if we previously crossed midnight, current_date has already been incremented.
+    
+    crosses_midnight = end_t < start_t
+    
+    # Split the slot if it crosses midnight
+    slots_to_process = []
+    if crosses_midnight:
+        slots_to_process.append({'date': current_date, 'start': start_t, 'end': '23:59'})
+        # Increment date for the second part and future lines
+        try:
+            dt = datetime.strptime(current_date, '%Y-%m-%d')
+            next_day = (dt + timedelta(days=1)).strftime('%Y-%m-%d')
+            current_date = next_day
+            slots_to_process.append({'date': current_date, 'start': '00:00', 'end': end_t})
+        except ValueError:
+            pass
+    else:
+        slots_to_process.append({'date': current_date, 'start': start_t, 'end': end_t})
+
+    parts = re.split(r'(?i)(landen|starten)', description)
+    records = []
+    current_op = None
+    runway_re = re.compile(r'([a-zA-Z\s]+)\s*\((\d+[LR]?)\)')
+    
+    for part in parts:
+        p = part.strip().lower()
+        if p == 'landen':
+            current_op = 'Landing'
+        elif p == 'starten':
+            current_op = 'Takeoff'
+        elif current_op and p:
+            matches = runway_re.findall(part)
+            for name, direction in matches:
+                clean_name = re.sub(r'^(en|en/of|of)\s+', '', name.strip(), flags=re.IGNORECASE).strip()
+                for slot in slots_to_process:
+                    records.append({
+                        'date': slot['date'],
+                        'start_time': slot['start'],
+                        'end_time': slot['end'],
+                        'operation': current_op,
+                        'runway_name': clean_name,
+                        'direction': direction.strip()
+                    })
+    
+    return records, current_date
+
 def parse_slot(line):
     """Attempts to split a line into a time slot and description."""
-    # Matches "Van 09:20 tot 10:40: Description" or "Van 09:20 tot 10:40 Description"
     match = re.search(r'^(Van \d{2}:\d{2} tot \d{2}:\d{2}):?\s*(.*)', line, re.IGNORECASE)
     if match:
         return match.group(1), match.group(2)
@@ -78,7 +158,6 @@ def write_markdown(state):
             
             slots = day_data.get('slots', {})
             if slots:
-                # Sort slots by time
                 for slot_time in sorted(slots.keys()):
                     f.write(f"- {slot_time}: {slots[slot_time]}\n")
             else:
@@ -90,6 +169,9 @@ def run_scraper(days_back=14):
     state = load_state()
     seen_slugs = set(state.get("seen_slugs", []))
     days = state.get("days", {})
+    
+    conn = init_db()
+    cursor = conn.cursor()
     
     new_results = []
     cutoff_date = datetime.now() - timedelta(days=days_back)
@@ -116,37 +198,31 @@ def run_scraper(days_back=14):
         for post_wrapper in results:
             post = post_wrapper.get('post', {})
             label = post_wrapper.get('post_type_label', '')
-            
             if 'baangebruik' not in label.lower() and 'baangebruik' not in post.get('post_title', '').lower():
                 continue
 
             slug = post.get('post_name')
             post_date_str = post.get('post_date')
-            
-            if not post_date_str:
-                continue
+            if not post_date_str: continue
 
             try:
                 post_datetime = datetime.strptime(post_date_str, '%Y-%m-%d %H:%M:%S')
-            except ValueError:
-                continue
+            except ValueError: continue
             
-            if slug in seen_slugs:
-                if post_datetime < cutoff_date:
-                    stop_searching = True
-                    break
-                continue
-                
             if post_datetime < cutoff_date:
                 stop_searching = True
                 break
             
-            # New post found
+            # Restore API efficiency: Skip if already seen and in DB
+            if slug in seen_slugs:
+                cursor.execute("SELECT 1 FROM runway_usage WHERE slug = ? LIMIT 1", (slug,))
+                if cursor.fetchone():
+                    continue
+
+            # Process post
             title = post.get('post_title')
-            date_key = post_datetime.strftime('%Y-%m-%d')
             print(f"Processing: {post_date_str} - {title}")
             
-            # Fetch detail
             detail_url = BASE_DETAIL_URL.format(slug=f"/runway/{slug}/")
             try:
                 detail_res = requests.get(detail_url, headers=HEADERS, timeout=10)
@@ -156,54 +232,52 @@ def run_scraper(days_back=14):
                 
                 runway_info = extract_runway_info(content_html)
                 
-                if date_key not in days:
-                    days[date_key] = {
-                        "title": title,
-                        "slots": {},
-                        "last_updated": post_date_str
-                    }
-                
-                # Update slots. Since we process DESC (newest first), 
-                # we should only update if the post is newer than what we have.
-                # However, if we process multiple posts for the same day in one run, 
-                # the first one we see is the newest.
-                
-                is_newer = post_date_str >= days[date_key].get('last_updated', '')
+                # IMPORTANT: Initial date for the post is the calendar date of the post
+                current_processing_date = post_datetime.strftime('%Y-%m-%d')
                 
                 for line in runway_info:
                     slot_time, description = parse_slot(line)
                     if slot_time:
-                        # If it's a newer post, or the slot doesn't exist yet, update it
-                        if is_newer or slot_time not in days[date_key]['slots']:
-                            days[date_key]['slots'][slot_time] = description
-                    else:
-                        # Handle lines without clear slot (less common)
-                        if is_newer:
-                            # Use the line itself as a slot if we can't parse it? 
-                            # Better to skip or add as a generic entry.
-                            pass
-                
-                if is_newer:
-                    days[date_key]['title'] = title
-                    days[date_key]['last_updated'] = post_date_str
+                        # Update DB with midnight-crossing logic
+                        db_records, next_date = parse_usage_line(current_processing_date, slot_time, description)
+                        current_processing_date = next_date
+                        
+                        for rec in db_records:
+                            cursor.execute('''
+                                INSERT OR REPLACE INTO runway_usage 
+                                (date, start_time, end_time, operation, runway_name, direction, post_date, slug)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (rec['date'], rec['start_time'], rec['end_time'], 
+                                  rec['operation'], rec['runway_name'], rec['direction'], 
+                                  post_date_str, slug))
+                            
+                            # Also update the JSON state for markdown (grouped by the ACTUAL date of the slot)
+                            date_key = rec['date']
+                            if date_key not in days:
+                                days[date_key] = {"title": title, "slots": {}, "last_updated": post_date_str}
+                            
+                            # For the markdown, we still want the original slot_time string for display
+                            # but we only update if it's a newer post for that day.
+                            if post_date_str >= days[date_key].get('last_updated', ''):
+                                days[date_key]['slots'][slot_time] = description
+                                days[date_key]['last_updated'] = post_date_str
+                                days[date_key]['title'] = title
 
                 seen_slugs.add(slug)
-                new_results.append(slug)
             except Exception as e:
                 print(f"Error fetching details for {slug}: {e}")
         
         page += 1
-        if page > 5: # Safety break
-            break
+        if page > 5: break
 
-    if new_results:
-        state["seen_slugs"] = list(seen_slugs)
-        state["days"] = days
-        write_markdown(state)
-        save_state(state)
-        print(f"Updated {len(new_results)} new posts and regenerated {OUTPUT_FILE}")
-    else:
-        print("No new updates found.")
+    conn.commit()
+    conn.close()
+    
+    state["seen_slugs"] = list(seen_slugs)
+    state["days"] = days
+    write_markdown(state)
+    save_state(state)
+    print(f"Regenerated database and {OUTPUT_FILE} with midnight-crossing logic.")
 
 if __name__ == "__main__":
     run_scraper(days_back=14)
