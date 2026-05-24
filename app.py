@@ -5,7 +5,7 @@ import os
 import altair as alt
 from datetime import date, datetime, timedelta
 
-# Configuratie
+# Configuration
 DB_FILE = "runway_data.db"
 
 st.set_page_config(page_title="baangebruik Schiphol", layout="wide")
@@ -14,20 +14,20 @@ if not os.path.exists(DB_FILE):
     st.error(f"Databasebestand `{DB_FILE}` niet gevonden. Voer eerst `bas_scraper.py` uit.")
     st.stop()
 
-# Helperfunctie om data te laden
-@st.cache_data(ttl=600) # Cache voor 10 minuten
+# Helper function to load data
+@st.cache_data(ttl=600) # Cache for 10 minutes
 def load_data():
     conn = sqlite3.connect(DB_FILE)
     df = pd.read_sql_query("SELECT * FROM runway_usage", conn)
     conn.close()
     df['date'] = pd.to_datetime(df['date']).dt.date
-    # Vertaal operaties in de dataframe voor consistente weergave
+    # Translate operations in the dataframe for consistent display
     df['operation'] = df['operation'].replace({'Landing': 'Landen', 'Takeoff': 'Starten'})
     return df
 
 df = load_data()
 
-# Helperfunctie voor tijdlijn grafiek
+# Helper function for timeline chart
 def plot_runway_timeline(df, plot_date):
     if df.empty:
         return None
@@ -76,7 +76,7 @@ def plot_runway_timeline(df, plot_date):
     return chart
 
 def merge_slots(df):
-    """Samenvoegen van aangrenzende tijdslots met dezelfde operatie en richting."""
+    """Merges adjacent time slots with the same operation and direction."""
     if df.empty:
         return df
     
@@ -100,16 +100,25 @@ def merge_slots(df):
         
     return pd.DataFrame(merged)
 
-# Helperfunctie voor datufreshness weergave
+# Helper function for analytics
+def inject_analytics():
+    analytics_code = """
+    <script data-goatcounter="https://schiphol-runways.goatcounter.com/count"
+            async src="//gc.zgo.at/count.js"></script>
+    """
+    st.components.v1.html(analytics_code, height=0)
+
+# Helper function for data freshness display
 def toon_laatste_update():
     if not df.empty:
         laatste_update = pd.to_datetime(df['post_date']).max()
         laatste_update_str = laatste_update.strftime('%d %B %Y %H:%M')
         st.caption(f"Laatste update van bezoekbas.nl: {laatste_update_str}")
 
-# --- Pagina Functies ---
+# --- Page Functions ---
 
 def overview_page():
+    inject_analytics()
     st.title("Schiphol Baangebruik Overzicht")
     toon_laatste_update()
     st.markdown("Visualiseer de algemene baanactiviteit op basis van gegevens van `bezoekbas.nl`.")
@@ -150,7 +159,7 @@ def overview_page():
         key="overview_operation_select"
     )
 
-    # Filters toepassen
+    # Apply filters
     filtered_df = df[
         (df['runway_name'].isin(selected_runways)) &
         (df['direction'].isin(selected_directions)) &
@@ -172,7 +181,7 @@ def overview_page():
 
     st.subheader("Gefilterde Gebruiksgegevens")
     display_cols = ['date', 'start_time', 'end_time', 'operation', 'runway_name', 'direction', 'post_date']
-    # Hernoem kolommen voor de tabel
+    # Rename columns for the table
     display_df = filtered_df[display_cols].rename(columns={
         'date': 'Datum',
         'start_time': 'Start',
@@ -205,7 +214,7 @@ def overview_page():
             
             if not day_data.empty:
                 summary = day_data.groupby(['runway_name', 'operation']).size().reset_index()
-                # Samenvoegen van items met compacte regelafstand en zonder bullets
+                # Merge items with compact line spacing and without bullets
                 summary_text = "  \n".join([
                     f"**{row['runway_name']}**: {row['operation']}"
                     for _, row in summary.iterrows()
@@ -221,6 +230,7 @@ def overview_page():
         st.write("Geen gegevens beschikbaar voor de huidige filters.")
 
 def runway_detail_page(runway_name):
+    inject_analytics()
     st.title(f"{runway_name}")
     toon_laatste_update()
     
@@ -229,7 +239,7 @@ def runway_detail_page(runway_name):
     
     st.write(f"Historisch gebruik voor de **{runway_name}**.")
     
-    # --- Sectie Vandaag ---
+    # --- Today's Section ---
     st.markdown(f"### Vandaag ({today.strftime('%d %B %Y')})")
     today_df = runway_df[runway_df['date'] == today]
     
@@ -249,7 +259,7 @@ def runway_detail_page(runway_name):
     
     st.divider()
     
-    # --- Historische Sectie ---
+    # --- Historical Section ---
     min_date_val = runway_df['date'].min()
     yesterday = today - timedelta(days=1)
 
@@ -279,11 +289,11 @@ def runway_detail_page(runway_name):
         st.write("Geen historische gegevens beschikbaar voor deze baan.")
 
 
-# --- Navigatie Instellen ---
+# --- Navigation Setup ---
 
 all_runway_names = sorted(df['runway_name'].unique())
 
-# Basis pagina's definieren
+# Define base pages
 pages = {
     "Overzicht": [st.Page(overview_page, title="Overzicht", url_path="overzicht")],
     "Banen": [
@@ -297,7 +307,7 @@ pages = {
 
 pg = st.navigation(pages)
 
-# Metadata voor datufreshness in de sidebar
+# Data freshness metadata in sidebar
 if not df.empty:
     laatste_update = pd.to_datetime(df['post_date']).max()
     laatste_update_str = laatste_update.strftime('%d %B %Y %H:%M')
