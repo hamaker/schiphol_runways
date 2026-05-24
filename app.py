@@ -102,11 +102,16 @@ def merge_slots(df):
 
 # Helper function for analytics
 def inject_analytics():
-    analytics_code = """
+    # In Streamlit, this runs in an iframe. We use the JS script AND an image pixel fallback.
+    # We dynamically pass the current page URL to the pixel to ensure it's tracked even in the iframe.
+    current_page = st.navigation.get_current_page().url_path
+    analytics_code = f"""
     <script data-goatcounter="https://schiphol-runways.goatcounter.com/count"
-            async src="//gc.zgo.at/count.js"></script>
+            async src="https://gc.zgo.at/count.js"></script>
+    <img src="https://schiphol-runways.goatcounter.com/count?p=/{current_page}" style="display:none">
     """
-    st.components.v1.html(analytics_code, height=0)
+    st.components.v1.html(analytics_code, height=1)
+
 
 # Helper function for data freshness display
 def toon_laatste_update():
