@@ -100,10 +100,18 @@ def merge_slots(df):
         
     return pd.DataFrame(merged)
 
+# Helperfunctie voor datufreshness weergave
+def toon_laatste_update():
+    if not df.empty:
+        laatste_update = pd.to_datetime(df['post_date']).max()
+        laatste_update_str = laatste_update.strftime('%d %B %Y %H:%M')
+        st.caption(f"Laatste update van bezoekbas.nl: {laatste_update_str}")
+
 # --- Pagina Functies ---
 
 def overview_page():
     st.title("Schiphol Baangebruik Overzicht")
+    toon_laatste_update()
     st.markdown("Visualiseer de algemene baanactiviteit op basis van gegevens van `bezoekbas.nl`.")
 
     # Sidebar filters
@@ -214,6 +222,7 @@ def overview_page():
 
 def runway_detail_page(runway_name):
     st.title(f"{runway_name}")
+    toon_laatste_update()
     
     runway_df = df[df['runway_name'] == runway_name]
     today = date(2026, 5, 24)
@@ -287,4 +296,12 @@ pages = {
 }
 
 pg = st.navigation(pages)
+
+# Metadata voor datufreshness in de sidebar
+if not df.empty:
+    laatste_update = pd.to_datetime(df['post_date']).max()
+    laatste_update_str = laatste_update.strftime('%d %B %Y %H:%M')
+    st.sidebar.markdown(f"**Laatste update van bezoekbas.nl:**  \n{laatste_update_str}")
+    st.sidebar.divider()
+
 pg.run()
