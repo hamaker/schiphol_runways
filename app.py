@@ -199,13 +199,12 @@ def overview_page():
                     st.write(f"- **{row['runway_name']}**: {row['operation']}")
             else:
                 st.write("*No activity recorded for the selected filters.*")
-    else:
-        st.write("No data available for the current filters.")
 
-    if not filtered_df.empty:
         st.subheader("Usage Frequency by Runway")
         usage_counts = filtered_df.groupby(['runway_name', 'operation']).size().reset_index(name='count')
         st.bar_chart(usage_counts, x="runway_name", y="count", color="operation", use_container_width=True)
+    else:
+        st.write("No data available for the current filters.")
 
 def runway_detail_page(runway_name):
     st.title(f"{runway_name}")
@@ -224,8 +223,14 @@ def runway_detail_page(runway_name):
         chart = plot_runway_timeline(today_slots, today)
         if chart:
             st.altair_chart(chart, use_container_width=True)
-        for _, row in today_slots.iterrows():
-            st.write(f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
+        
+        # Consolidate slots into a single markdown block for compact spacing
+        # Note the two spaces before \n for a markdown line break
+        slots_text = "  \n".join([
+            f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})"
+            for _, row in today_slots.iterrows()
+        ])
+        st.markdown(slots_text)
     else:
         st.info(f"A quiet day: No slots found for {runway_name} today.")
     
@@ -248,8 +253,14 @@ def runway_detail_page(runway_name):
                 chart = plot_runway_timeline(merged_day_slots, d)
                 if chart:
                     st.altair_chart(chart, use_container_width=True)
-                for _, row in merged_day_slots.iterrows():
-                    st.write(f"- **{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
+                
+                # Consolidate slots into a single markdown block for compact spacing
+                # Note the two spaces before \n for a markdown line break
+                slots_text = "  \n".join([
+                    f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})"
+                    for _, row in merged_day_slots.iterrows()
+                ])
+                st.markdown(slots_text)
             else:
                 st.write("*No runway usage recorded for this date.*")
     elif min_date_val == today:
