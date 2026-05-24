@@ -96,15 +96,16 @@ def parse_usage_line(current_date, slot_time, description):
     parts = re.split(r'(?i)(landen|starten)', description)
     records = []
     current_op = None
-    runway_re = re.compile(r'([a-zA-Z\s]+)\s*\((\d+[LR]?)\)')
+    # Support Left (L), Right (R), and Center (C) runways
+    runway_re = re.compile(r'([a-zA-Z\s]+)\s*\((\d+[LRC]?)\)')
     
-    for part in parts:
-        p = part.strip().lower()
-        if p == 'landen':
-            current_op = 'Landing'
-        elif p == 'starten':
-            current_op = 'Takeoff'
-        elif current_op and p:
+    for i, part in enumerate(parts):
+        if i % 2 != 0:
+            current_op = 'Landing' if part.lower() == 'landen' else 'Takeoff'
+            continue
+            
+        if current_op and part.strip():
+            # Find all runways in this segment
             matches = runway_re.findall(part)
             for name, direction in matches:
                 clean_name = re.sub(r'^(en|en/of|of)\s+', '', name.strip(), flags=re.IGNORECASE).strip()

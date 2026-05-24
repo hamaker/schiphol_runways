@@ -197,8 +197,12 @@ def overview_page():
             
             if not day_data.empty:
                 summary = day_data.groupby(['runway_name', 'operation']).size().reset_index()
-                for _, row in summary.iterrows():
-                    st.write(f"- **{row['runway_name']}**: {row['operation']}")
+                # Samenvoegen van items met compacte regelafstand en zonder bullets
+                summary_text = "  \n".join([
+                    f"**{row['runway_name']}**: {row['operation']}"
+                    for _, row in summary.iterrows()
+                ])
+                st.markdown(summary_text)
             else:
                 st.write("*Geen activiteit geregistreerd voor de geselecteerde filters.*")
 
