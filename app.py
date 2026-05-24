@@ -19,17 +19,14 @@ def load_data():
     conn = sqlite3.connect(DB_FILE)
     df = pd.read_sql_query("SELECT * FROM runway_usage", conn)
     conn.close()
-    # Convert date to datetime for filtering
     df['date'] = pd.to_datetime(df['date']).dt.date
     return df
 
 df = load_data()
 
-# Navigation
-st.sidebar.title("Menu")
-page = st.sidebar.selectbox("Navigation", ["Overview", "Runway Detail"])
+# --- Page Functions ---
 
-if page == "Overview":
+def overview_page():
     st.title("Schiphol Runway Usage Overview")
     st.markdown("Visualize overall runway activity based on data from `bezoekbas.nl`.")
 
@@ -98,66 +95,54 @@ if page == "Overview":
         usage_counts = filtered_df.groupby(['runway_name', 'operation']).size().reset_index(name='count')
         st.bar_chart(usage_counts, x="runway_name", y="count", color="operation", use_container_width=True)
 
-elif page == "Runway Detail":
-    st.title("Runway Usage Detail")
+def runway_detail_page(runway_name):
+    st.title(f"{runway_name}")
     
-    # Safety check for empty data
-    if df.empty:
-        st.warning("No runway data available. Please run the scraper first.")
-        st.stop()
-
-    all_runways = sorted(df['runway_name'].unique())
+    runway_df = df[df['runway_name'] == runway_name]
+    today = date(2026, 5, 24)
     
-    # Client-side persistence using Query Parameters
-    # This stores the selection in the URL, which persists on refresh/share
-    query_params = st.query_params
-    last_runway = query_params.get("runway")
+    st.write(f"Showing historical usage for the **{runway_name}**.")
     
-    default_index = 0
-    if last_runway in all_runways:
-        default_index = all_runways.index(last_runway)
+    # Today's slots
+    today_slots = runway_df[runway_df['date'] == today].sort_values(by='start_time')
+    
+    st.markdown(f"### Today ({today.strftime('%d %B %Y')})")
+    if not today_slots.empty:
+        for _, row in today_slots.iterrows():
+            st.write(f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
+    else:
+        st.info(f"No slots found for {runway_name} today.")
+    
+    st.divider()
+    
+    # Past slots
+    past_slots = runway_df[runway_df['date'] != today].sort_values(by=['date', 'start_time'], ascending=[False, True])
+    
+    if not past_slots.empty:
+        current_date = None
+        for _, row in past_slots.iterrows():
+            if row['date'] != current_date:
+                current_date = row['date']
+                st.markdown(f"### {current_date.strftime('%d %B %Y')}")
+            st.write(f"- **{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
+    else:
+        st.write("No historical data available for this runway.")
 
-    selected_runway = st.selectbox(
-        "Select a Runway", 
-        options=all_runways,
-        index=default_index,
-        key="runway_detail_selector"
-    )
+# --- Navigation Setup ---
 
-    if selected_runway:
-        # Update client-side state via URL
-        st.query_params["runway"] = selected_runway
-        
-        runway_df = df[df['runway_name'] == selected_runway]
-        
-        # Determine "Today"
-        today = date(2026, 5, 24)
-        
-        st.write(f"Showing historical usage for the **{selected_runway}**.")
-        
-        # Today's slots
-        today_slots = runway_df[runway_df['date'] == today].sort_values(by='start_time')
-        
-        st.markdown(f"### Today ({today.strftime('%d %B %Y')})")
-        if not today_slots.empty:
-            for _, row in today_slots.iterrows():
-                st.write(f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
-        else:
-            st.info(f"No slots found for {selected_runway} today.")
-        
-        st.divider()
-        
-        # Past slots
-        past_slots = runway_df[runway_df['date'] != today].sort_values(by=['date', 'start_time'], ascending=[False, True])
-        
-        if not past_slots.empty:
-            current_date = None
-            for _, row in past_slots.iterrows():
-                if row['date'] != current_date:
-                    current_date = row['date']
-                    st.markdown(f"### {current_date.strftime('%d %B %Y')}")
-                st.write(f"- **{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
-        else:
-            st.write("No historical data available for this runway.")
+all_runway_names = sorted(df['runway_name'].unique())
 
-st.sidebar.markdown("---")
+# Define base pages
+pages = {
+    "Overview": [st.Page(overview_page, title="Overview", url_path="overview")],
+    "Runways": [
+        st.Page(
+            lambda r=name: runway_detail_page(r), 
+            title=name, 
+            url_path=name.replace(" ", "_")
+        ) for name in all_runway_names
+    ]
+}
+
+pg = st.navigation(pages)
+pg.run()
