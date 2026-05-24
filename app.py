@@ -95,6 +95,34 @@ def overview_page():
         usage_counts = filtered_df.groupby(['runway_name', 'operation']).size().reset_index(name='count')
         st.bar_chart(usage_counts, x="runway_name", y="count", color="operation", use_container_width=True)
 
+def merge_slots(df):
+    """Merges adjacent time slots with the same operation and direction."""
+    if df.empty:
+        return df
+    
+    # Sort by start time to ensure adjacency check works
+    df = df.sort_values('start_time').reset_index(drop=True)
+    
+    merged = []
+    if not df.empty:
+        curr = df.iloc[0].to_dict()
+        
+        for i in range(1, len(df)):
+            nxt = df.iloc[i].to_dict()
+            
+            # Check if adjacent AND same operation/direction
+            if (curr['end_time'] == nxt['start_time'] and 
+                curr['operation'] == nxt['operation'] and 
+                curr['direction'] == nxt['direction']):
+                # Merge: update current end time to next end time
+                curr['end_time'] = nxt['end_time']
+            else:
+                merged.append(curr)
+                curr = nxt
+        merged.append(curr)
+        
+    return pd.DataFrame(merged)
+
 def runway_detail_page(runway_name):
     st.title(f"{runway_name}")
     
@@ -104,7 +132,8 @@ def runway_detail_page(runway_name):
     st.write(f"Showing historical usage for the **{runway_name}**.")
     
     # Today's slots
-    today_slots = runway_df[runway_df['date'] == today].sort_values(by='start_time')
+    today_df = runway_df[runway_df['date'] == today]
+    today_slots = merge_slots(today_df)
     
     st.markdown(f"### Today ({today.strftime('%d %B %Y')})")
     if not today_slots.empty:
@@ -116,15 +145,17 @@ def runway_detail_page(runway_name):
     st.divider()
     
     # Past slots
-    past_slots = runway_df[runway_df['date'] != today].sort_values(by=['date', 'start_time'], ascending=[False, True])
+    past_df = runway_df[runway_df['date'] != today]
     
-    if not past_slots.empty:
-        current_date = None
-        for _, row in past_slots.iterrows():
-            if row['date'] != current_date:
-                current_date = row['date']
-                st.markdown(f"### {current_date.strftime('%d %B %Y')}")
-            st.write(f"- **{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
+    if not past_df.empty:
+        # Group by date and merge within each date
+        dates = sorted(past_df['date'].unique(), reverse=True)
+        for d in dates:
+            st.markdown(f"### {d.strftime('%d %B %Y')}")
+            day_df = past_df[past_df['date'] == d]
+            merged_day_slots = merge_slots(day_df)
+            for _, row in merged_day_slots.iterrows():
+                st.write(f"- **{row['start_time']} - {row['end_time']}**: {row['operation']} (Direction: {row['direction']})")
     else:
         st.write("No historical data available for this runway.")
 
