@@ -45,30 +45,53 @@ def plot_runway_timeline(df, plot_date):
     plot_df['start_dt'] = plot_df['start_time'].apply(to_dt)
     plot_df['end_dt'] = plot_df['end_time'].apply(to_dt)
     plot_df.loc[plot_df['end_time'] == '23:59', 'end_dt'] += timedelta(minutes=1)
+    
+    # Calculate midpoint for text label
+    plot_df['mid_dt'] = plot_df['start_dt'] + (plot_df['end_dt'] - plot_df['start_dt']) / 2
 
-    chart = alt.Chart(plot_df).mark_bar(
-        opacity=0.8, 
-        stroke='white', 
-        strokeWidth=1,
-        size=30
-    ).encode(
+    # Base chart for shared encoding
+    base = alt.Chart(plot_df).encode(
         x=alt.X('start_dt:T', 
                 title='Tijd',
                 scale=alt.Scale(domain=[base_dt, base_dt + timedelta(days=1)]),
                 axis=alt.Axis(format='%H:%M', tickCount=24)),
-        x2='end_dt:T',
-        y=alt.value(0),
-        color=alt.Color('operation:N', 
-                        scale=alt.Scale(domain=['Landen', 'Starten'], 
-                                       range=['#1f77b4', '#ff7f0e']),
-                        legend=alt.Legend(title="Gebruik")),
         tooltip=[
             alt.Tooltip('start_time', title='Start'),
             alt.Tooltip('end_time', title='Eind'),
             alt.Tooltip('operation', title='Gebruik'),
             alt.Tooltip('direction', title='Richting')
         ]
-    ).properties(
+    )
+
+    # Bars layer
+    bars = base.mark_bar(
+        opacity=0.8, 
+        stroke='white', 
+        strokeWidth=1,
+        size=30
+    ).encode(
+        x2='end_dt:T',
+        y=alt.value(0),
+        color=alt.Color('operation:N', 
+                        scale=alt.Scale(domain=['Landen', 'Starten'], 
+                                       range=['#1f77b4', '#ff7f0e']),
+                        legend=alt.Legend(title="Gebruik"))
+    )
+
+    # Text layer
+    text = base.mark_text(
+        align='center',
+        baseline='middle',
+        color='white',
+        fontWeight='bold',
+        fontSize=12
+    ).encode(
+        x='mid_dt:T',
+        y=alt.value(0),
+        text='direction:N'
+    )
+
+    chart = (bars + text).properties(
         height=100,
         width='container'
     )
