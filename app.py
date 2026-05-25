@@ -204,21 +204,26 @@ def get_next_update_time(last_update_dt):
     else:
         return "09:45"
 
-# Helper function to render data freshness and coverage captions
-def render_freshness_metadata():
-    if not df.empty:
-        last_update_dt = pd.to_datetime(df['post_date']).max()
-        last_update_str = f"{dutch_date(last_update_dt)} {last_update_dt.strftime('%H:%M')}"
-        
-        max_date = df['date'].max()
-        max_time = df[df['date'] == max_date]['end_time'].max()
-        coverage_str = f"{dutch_date(max_date)} {max_time}"
-        
-        next_up = get_next_update_time(last_update_dt)
-        st.write(f"Volgende update wordt verwacht rond {next_up}")
-        st.caption(f"Laatste update van bezoekbas.nl: {last_update_str}  \nDeze update bevat informatie tot: {coverage_str}  \nVolgende update wordt verwacht rond {next_up}")
-        return last_update_dt
-    return None
+# Helper function to calculate metadata values (Query - no side effects)
+def get_metadata():
+    if df.empty:
+        return None
+    
+    last_update_dt = pd.to_datetime(df['post_date']).max()
+    max_date = df['date'].max()
+    max_time = df[df['date'] == max_date]['end_time'].max()
+    
+    return {
+        "last_update_dt": last_update_dt,
+        "last_update_str": f"{dutch_date(last_update_dt)} {last_update_dt.strftime('%H:%M')}",
+        "coverage_str": f"{dutch_date(max_date)} {max_time}",
+        "next_up": get_next_update_time(last_update_dt)
+    }
+
+# Helper function to render metadata captions (Command - no return)
+def render_metadata_captions(metadata):
+    if metadata:
+        st.caption(f"Laatste update van bezoekbas.nl: {metadata['last_update_str']}  \nDeze update bevat informatie tot: {metadata['coverage_str']}   \nVolgende update wordt verwacht rond: {metadata['next_up']} ")
 
 # --- Page Functions ---
 
@@ -226,9 +231,10 @@ def overview_page():
     inject_analytics("overzicht")
     st.title("Schiphol Baangebruik Overzicht")
     
-    render_freshness_metadata()
+    metadata = get_metadata()
+    render_metadata_captions(metadata)
 
-    st.markdown("Visualiseer de algemene baanactiviteit op basis van gegevens van `bezoekbas.nl`.")
+    st.markdown("Schiphol baanactiviteit op basis van gegevens van `bezoekbas.nl`.")
 
     # Sidebar filters
     st.sidebar.header("Filters")
@@ -348,7 +354,8 @@ def runway_detail_page(runway_name):
     inject_analytics(runway_name.replace(" ", "_"))
     st.title(f"{runway_name}")
 
-    last_update_dt = render_freshness_metadata()
+    metadata = get_metadata()
+    render_metadata_captions(metadata)
 
     runway_df = df[df['runway_name'] == runway_name]
     today = date.today()
@@ -358,11 +365,6 @@ def runway_detail_page(runway_name):
           meest actuele verwachting van Luchtverkeersleiding Nederland (LVNL) zoals gepubliceerd op \
           [bezoekbas.nl](https://bezoekbas.nl/actuele-informatie)")
 
-    if last_update_dt:
-        next_up = get_next_update_time(last_update_dt)
-        st.write(f"Volgende update wordt verwacht rond {next_up}")
-
-    
     # --- Tomorrow's Section ---
     tomorrow_df = runway_df[runway_df['date'] == tomorrow]
     if not tomorrow_df.empty:
