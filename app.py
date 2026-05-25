@@ -190,13 +190,13 @@ def inject_analytics(path):
 def show_last_update():
     if not df.empty:
         laatste_update = pd.to_datetime(df['post_date']).max()
-        laatste_update_str = laatste_update.strftime('%d-%m-%Y %H:%M')
+        laatste_update_str = f"{dutch_date(laatste_update)} {laatste_update.strftime('%H:%M')}"
         
         max_date = df['date'].max()
         max_time = df[df['date'] == max_date]['end_time'].max()
         coverage_str = f"{dutch_date(max_date)} {max_time}"
         
-        st.caption(f"Laatste update van bezoekbas.nl: {laatste_update_str}  \nInformatie beschikbaar tot: {coverage_str}")
+        st.caption(f"Laatste update van bezoekbas.nl: {laatste_update_str}  \nDeze update bevat informatie tot: {coverage_str}")
 
 # --- Page Functions ---
 
@@ -425,7 +425,7 @@ pg = st.navigation(pages)
 # Data freshness metadata in sidebar
 if not df.empty:
     laatste_update = pd.to_datetime(df['post_date']).max()
-    laatste_update_str = laatste_update.strftime('%d-%m-%Y %H:%M')
+    laatste_update_str = f"{dutch_date(laatste_update)} {laatste_update.strftime('%H:%M')}"
     
     max_date = df['date'].max()
     max_time = df[df['date'] == max_date]['end_time'].max()
