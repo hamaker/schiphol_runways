@@ -15,7 +15,7 @@ if not os.path.exists(DB_FILE):
     st.stop()
 
 # Helper function to load data
-@st.cache_data(ttl=600) # Cache for 10 minutes
+@st.cache_data(ttl=120) # Cache for 10 minutes
 def load_data():
     conn = sqlite3.connect(DB_FILE)
     df = pd.read_sql_query("SELECT * FROM runway_usage", conn)
@@ -224,7 +224,16 @@ def overview_page():
         min_date_val = filtered_df['date'].min()
         max_date_val = filtered_df['date'].max()
         
-        effective_today = date(2026, 5, 24)
+        effective_today = date.today()
+        tomorrow = effective_today + timedelta(days=1)
+        
+        # Ensure range covers at least tomorrow if data exists for it
+        if max_date_val < tomorrow:
+            # Check if there is actually data for tomorrow before extending the max
+            if not filtered_df[filtered_df['date'] == tomorrow].empty:
+                max_date_val = tomorrow
+        
+        # If effective today is newer than our max data date, use that as max
         if max_date_val < effective_today:
             max_date_val = effective_today
             
@@ -234,6 +243,8 @@ def overview_page():
             date_display = f"{d.strftime('%d %B %Y')}"
             if d == effective_today:
                 date_display += " (Vandaag)"
+            elif d == tomorrow:
+                date_display += " (Morgen)"
             
             st.markdown(f"#### {date_display}")
             day_data = filtered_df[filtered_df['date'] == d]
@@ -261,10 +272,27 @@ def runway_detail_page(runway_name):
     toon_laatste_update()
     
     runway_df = df[df['runway_name'] == runway_name]
-    today = date(2026, 5, 24)
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
     
     st.write(f"Historisch gebruik voor de **{runway_name}**.")
     
+    # --- Tomorrow's Section (Conditional) ---
+    tomorrow_df = runway_df[runway_df['date'] == tomorrow]
+    if not tomorrow_df.empty:
+        st.markdown(f"### Morgen ({tomorrow.strftime('%d %B %Y')})")
+        tomorrow_slots = merge_slots(tomorrow_df)
+        chart = plot_runway_timeline(tomorrow_slots, tomorrow)
+        if chart:
+            st.altair_chart(chart, use_container_width=True)
+        
+        slots_text = "  \n".join([
+            f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Richting: {row['direction']})"
+            for _, row in tomorrow_slots.iterrows()
+        ])
+        st.markdown(slots_text)
+        st.divider()
+
     # --- Today's Section ---
     st.markdown(f"### Vandaag ({today.strftime('%d %B %Y')})")
     today_df = runway_df[runway_df['date'] == today]
