@@ -28,13 +28,10 @@ def load_data():
 df = load_data()
 
 # Helper function for timeline chart
-def plot_runway_timeline(df, plot_date):
-    if df.empty:
-        return None
-    
-    plot_df = df.copy()
+def plot_runway_timeline(runway_df, plot_date):
     base_dt = datetime.combine(plot_date, datetime.min.time())
-    
+    next_day_dt = base_dt + timedelta(days=1)
+
     def to_dt(t_str):
         try:
             h, m = map(int, t_str.split(':'))
@@ -42,18 +39,72 @@ def plot_runway_timeline(df, plot_date):
         except:
             return base_dt
 
-    plot_df['start_dt'] = plot_df['start_time'].apply(to_dt)
-    plot_df['end_dt'] = plot_df['end_time'].apply(to_dt)
-    plot_df.loc[plot_df['end_time'] == '23:59', 'end_dt'] += timedelta(minutes=1)
+    # Process existing slots for THIS specific runway
+    active_slots = []
+    if not runway_df.empty:
+        for _, row in runway_df.iterrows():
+            start_dt = to_dt(row['start_time'])
+            end_dt = to_dt(row['end_time'])
+            if row['end_time'] == '23:59':
+                end_dt = next_day_dt
+            
+            active_slots.append({
+                'start_dt': start_dt,
+                'end_dt': end_dt,
+                'operation': row['operation'],
+                'direction': row['direction'],
+                'start_time': row['start_time'],
+                'end_time': row['end_time']
+            })
+
+    # Calculate global information limit using the GLOBAL df (airport-wide)
+    if not df.empty:
+        max_date_in_db = df['date'].max()
+        if plot_date < max_date_in_db:
+            # Full information available for days before the latest date
+            global_max_dt = next_day_dt
+        elif plot_date == max_date_in_db:
+            # Info limit is the latest slot for ANY runway today
+            global_day_data = df[df['date'] == plot_date]
+            global_max_time_str = global_day_data['end_time'].max()
+            global_max_dt = to_dt(global_max_time_str)
+            if global_max_time_str == '23:59':
+                global_max_dt = next_day_dt
+        else:
+            # No information at all for future dates
+            global_max_dt = base_dt
+    else:
+        global_max_dt = base_dt
+
+    # Prepare data for plotting
+    plot_slots = active_slots.copy()
+    
+    # Add the "Geen informatie" bar ONLY for the unknown part of the day
+    if global_max_dt < next_day_dt:
+        plot_slots.append({
+            'start_dt': global_max_dt,
+            'end_dt': next_day_dt,
+            'operation': 'Geen informatie',
+            'direction': '',
+            'start_time': global_max_dt.strftime('%H:%M'),
+            'end_time': '00:00'
+        })
+
+    plot_df = pd.DataFrame(plot_slots)
     
     # Calculate midpoint for text label
-    plot_df['mid_dt'] = plot_df['start_dt'] + (plot_df['end_dt'] - plot_df['start_dt']) / 2
+    if not plot_df.empty:
+        plot_df['mid_dt'] = plot_df['start_dt'] + (plot_df['end_dt'] - plot_df['start_dt']) / 2
+
+    # Split into active and gap dataframes for layered legend control
+    active_df = plot_df[plot_df['operation'] != 'Geen informatie'] if not plot_df.empty else pd.DataFrame()
+    gap_df = plot_df[plot_df['operation'] == 'Geen informatie'] if not plot_df.empty else pd.DataFrame()
 
     # Base chart for shared encoding
     base = alt.Chart(plot_df).encode(
         x=alt.X('start_dt:T', 
                 title='Tijd',
-                scale=alt.Scale(domain=[base_dt, base_dt + timedelta(days=1)]),
+                scale=alt.Scale(domain=[base_dt, next_day_dt]), # Force 24h domain
                 axis=alt.Axis(format='%H:%M', tickCount=24)),
         tooltip=[
             alt.Tooltip('start_time', title='Start'),
@@ -63,13 +114,38 @@ def plot_runway_timeline(df, plot_date):
         ]
     )
 
-    # Bars layer
-    bars = base.mark_bar(
+    # Layer 0: Invisible anchors to force the full 24h domain even if empty
+    anchors_df = pd.DataFrame([
+        {'start_dt': base_dt, 'end_dt': base_dt + timedelta(minutes=1), 'opacity': 0},
+        {'start_dt': next_day_dt - timedelta(minutes=1), 'end_dt': next_day_dt, 'opacity': 0}
+    ])
+    anchors = alt.Chart(anchors_df).mark_bar(opacity=0).encode(
+        x='start_dt:T',
+        x2='end_dt:T',
+        y=alt.value(0)
+    )
+
+    # Layer 1: Gap bars (No legend, darker gray)
+    gap_bars = alt.Chart(gap_df).mark_bar(
+        opacity=0.6, 
+        stroke='white', 
+        strokeWidth=1,
+        size=30,
+        color='#999999'
+    ).encode(
+        x='start_dt:T',
+        x2='end_dt:T',
+        y=alt.value(0)
+    )
+
+    # Layer 2: Active bars (With legend)
+    active_bars = alt.Chart(active_df).mark_bar(
         opacity=0.8, 
         stroke='white', 
         strokeWidth=1,
         size=30
     ).encode(
+        x='start_dt:T',
         x2='end_dt:T',
         y=alt.value(0),
         color=alt.Color('operation:N', 
@@ -78,8 +154,8 @@ def plot_runway_timeline(df, plot_date):
                         legend=alt.Legend(title="Gebruik"))
     )
 
-    # Text layer
-    text = base.mark_text(
+    # Layer 3: Text labels
+    text = alt.Chart(active_df).mark_text(
         align='center',
         baseline='middle',
         color='white',
@@ -91,7 +167,7 @@ def plot_runway_timeline(df, plot_date):
         text='direction:N'
     )
 
-    chart = (bars + text).properties(
+    chart = (anchors + gap_bars + active_bars + text).properties(
         height=100,
         width='container'
     )
@@ -134,12 +210,20 @@ def inject_analytics(path):
     """
     st.components.v1.html(analytics_code, height=1)
 
-# Helper function for data freshness display
+# Helper function for data freshness and coverage display
 def toon_laatste_update():
     if not df.empty:
         laatste_update = pd.to_datetime(df['post_date']).max()
         laatste_update_str = laatste_update.strftime('%d %B %Y %H:%M')
+        
+        # Calculate coverage end (max date + max end_time)
+        # We find the row with the maximum date, then the maximum end_time within that date
+        max_date = df['date'].max()
+        max_time = df[df['date'] == max_date]['end_time'].max()
+        coverage_str = f"{max_date.strftime('%d %B %Y')} {max_time}"
+        
         st.caption(f"Laatste update van bezoekbas.nl: {laatste_update_str}")
+        st.caption(f"Informatie beschikbaar tot: {coverage_str}")
 
 # --- Page Functions ---
 
@@ -297,12 +381,13 @@ def runway_detail_page(runway_name):
     st.markdown(f"### Vandaag ({today.strftime('%d %B %Y')})")
     today_df = runway_df[runway_df['date'] == today]
     
+    # Always show the timeline chart for Today
+    today_slots = merge_slots(today_df) if not today_df.empty else pd.DataFrame()
+    chart = plot_runway_timeline(today_slots, today)
+    if chart:
+        st.altair_chart(chart, use_container_width=True)
+
     if not today_df.empty:
-        today_slots = merge_slots(today_df)
-        chart = plot_runway_timeline(today_slots, today)
-        if chart:
-            st.altair_chart(chart, use_container_width=True)
-        
         slots_text = "  \n".join([
             f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Richting: {row['direction']})"
             for _, row in today_slots.iterrows()
@@ -323,13 +408,14 @@ def runway_detail_page(runway_name):
         for d in full_date_range:
             st.markdown(f"### {d.strftime('%d %B %Y')}")
             day_df = runway_df[runway_df['date'] == d]
+            
+            # Always show the timeline chart for historical dates in the range
+            merged_day_slots = merge_slots(day_df) if not day_df.empty else pd.DataFrame()
+            chart = plot_runway_timeline(merged_day_slots, d)
+            if chart:
+                st.altair_chart(chart, use_container_width=True)
 
             if not day_df.empty:
-                merged_day_slots = merge_slots(day_df)
-                chart = plot_runway_timeline(merged_day_slots, d)
-                if chart:
-                    st.altair_chart(chart, use_container_width=True)
-                
                 slots_text = "  \n".join([
                     f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Richting: {row['direction']})"
                     for _, row in merged_day_slots.iterrows()
@@ -365,7 +451,13 @@ pg = st.navigation(pages)
 if not df.empty:
     laatste_update = pd.to_datetime(df['post_date']).max()
     laatste_update_str = laatste_update.strftime('%d %B %Y %H:%M')
+    
+    max_date = df['date'].max()
+    max_time = df[df['date'] == max_date]['end_time'].max()
+    coverage_str = f"{max_date.strftime('%d %B %Y')} {max_time}"
+    
     st.sidebar.markdown(f"**Laatste update van bezoekbas.nl:**  \n{laatste_update_str}")
+    st.sidebar.markdown(f"**Informatie beschikbaar tot:**  \n{coverage_str}")
     st.sidebar.divider()
 
 pg.run()
