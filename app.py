@@ -8,6 +8,12 @@ from datetime import date, datetime, timedelta
 # Configuration
 DB_FILE = "runway_data.db"
 
+# Helper for Dutch date formatting
+def dutch_date(d):
+    months = ["januari", "februari", "maart", "april", "mei", "juni", 
+              "juli", "augustus", "september", "oktober", "november", "december"]
+    return f"{d.day} {months[d.month-1]} {d.year}"
+
 st.set_page_config(page_title="baangebruik Schiphol", layout="wide")
 
 if not os.path.exists(DB_FILE):
@@ -15,7 +21,7 @@ if not os.path.exists(DB_FILE):
     st.stop()
 
 # Helper function to load data
-@st.cache_data(ttl=120) # Cache for 10 minutes
+@st.cache_data(ttl=120) # Cache for 2 minutes
 def load_data():
     conn = sqlite3.connect(DB_FILE)
     df = pd.read_sql_query("SELECT * FROM runway_usage", conn)
@@ -39,8 +45,10 @@ def plot_runway_timeline(runway_df, plot_date):
         except:
             return base_dt
 
-    # Process existing slots for THIS specific runway
-    active_slots = []
+    # Combined data approach for clean layering
+    records = []
+    
+    # 1. Active slots
     if not runway_df.empty:
         for _, row in runway_df.iterrows():
             start_dt = to_dt(row['start_time'])
@@ -48,114 +56,82 @@ def plot_runway_timeline(runway_df, plot_date):
             if row['end_time'] == '23:59':
                 end_dt = next_day_dt
             
-            active_slots.append({
+            records.append({
                 'start_dt': start_dt,
                 'end_dt': end_dt,
                 'operation': row['operation'],
                 'direction': row['direction'],
-                'start_time': row['start_time'],
-                'end_time': row['end_time']
+                'tooltip_start': row['start_time'],
+                'tooltip_end': row['end_time']
             })
 
-    # Calculate global information limit using the GLOBAL df (airport-wide)
+    # 2. Information gap (airport-wide)
     if not df.empty:
         max_date_in_db = df['date'].max()
         if plot_date < max_date_in_db:
-            # Full information available for days before the latest date
             global_max_dt = next_day_dt
         elif plot_date == max_date_in_db:
-            # Info limit is the latest slot for ANY runway today
             global_day_data = df[df['date'] == plot_date]
             global_max_time_str = global_day_data['end_time'].max()
             global_max_dt = to_dt(global_max_time_str)
             if global_max_time_str == '23:59':
                 global_max_dt = next_day_dt
         else:
-            # No information at all for future dates
             global_max_dt = base_dt
     else:
         global_max_dt = base_dt
 
-    # Prepare data for plotting
-    plot_slots = active_slots.copy()
-    
-    # Add the "Geen informatie" bar ONLY for the unknown part of the day
     if global_max_dt < next_day_dt:
-        plot_slots.append({
+        records.append({
             'start_dt': global_max_dt,
             'end_dt': next_day_dt,
             'operation': 'Geen informatie',
             'direction': '',
-            'start_time': global_max_dt.strftime('%H:%M'),
-            'end_time': '00:00'
+            'tooltip_start': global_max_dt.strftime('%H:%M'),
+            'tooltip_end': '00:00'
         })
 
-    plot_df = pd.DataFrame(plot_slots)
-    
-    # Calculate midpoint for text label
-    if not plot_df.empty:
-        plot_df['mid_dt'] = plot_df['start_dt'] + (plot_df['end_dt'] - plot_df['start_dt']) / 2
+    # 3. Anchors for full 24h axis
+    records.append({'start_dt': base_dt, 'end_dt': base_dt + timedelta(seconds=1), 'operation': 'Anchor'})
+    records.append({'start_dt': next_day_dt - timedelta(seconds=1), 'end_dt': next_day_dt, 'operation': 'Anchor'})
 
-    # Split into active and gap dataframes for layered legend control
-    active_df = plot_df[plot_df['operation'] != 'Geen informatie'] if not plot_df.empty else pd.DataFrame()
-    gap_df = plot_df[plot_df['operation'] == 'Geen informatie'] if not plot_df.empty else pd.DataFrame()
+    plot_df = pd.DataFrame(records)
+    plot_df['mid_dt'] = plot_df['start_dt'] + (plot_df['end_dt'] - plot_df['start_dt']) / 2
 
-    # Base chart for shared encoding
+    # Unified base chart
     base = alt.Chart(plot_df).encode(
         x=alt.X('start_dt:T', 
-                title='Tijd',
-                scale=alt.Scale(domain=[base_dt, next_day_dt]), # Force 24h domain
-                axis=alt.Axis(format='%H:%M', tickCount=24)),
+                title=None, 
+                scale=alt.Scale(domain=[base_dt, next_day_dt]),
+                axis=alt.Axis(format='%H:%M', tickCount=24, labelAngle=0, labelFlush=False)),
         tooltip=[
-            alt.Tooltip('start_time', title='Start'),
-            alt.Tooltip('end_time', title='Eind'),
-            alt.Tooltip('operation', title='Gebruik'),
-            alt.Tooltip('direction', title='Richting')
+            alt.Tooltip('tooltip_start:N', title='Start'),
+            alt.Tooltip('tooltip_end:N', title='Eind'),
+            alt.Tooltip('operation:N', title='Gebruik'),
+            alt.Tooltip('direction:N', title='Richting')
         ]
     )
 
-    # Layer 0: Invisible anchors to force the full 24h domain even if empty
-    anchors_df = pd.DataFrame([
-        {'start_dt': base_dt, 'end_dt': base_dt + timedelta(minutes=1), 'opacity': 0},
-        {'start_dt': next_day_dt - timedelta(minutes=1), 'end_dt': next_day_dt, 'opacity': 0}
-    ])
-    anchors = alt.Chart(anchors_df).mark_bar(opacity=0).encode(
-        x='start_dt:T',
-        x2='end_dt:T',
-        y=alt.value(0)
-    )
-
-    # Layer 1: Gap bars (No legend, darker gray)
-    gap_bars = alt.Chart(gap_df).mark_bar(
-        opacity=0.6, 
-        stroke='white', 
-        strokeWidth=1,
-        size=30,
-        color='#999999'
-    ).encode(
-        x='start_dt:T',
-        x2='end_dt:T',
-        y=alt.value(0)
-    )
-
-    # Layer 2: Active bars (With legend)
-    active_bars = alt.Chart(active_df).mark_bar(
-        opacity=0.8, 
+    # Bars layer
+    bars = base.mark_bar(
         stroke='white', 
         strokeWidth=1,
         size=30
     ).encode(
-        x='start_dt:T',
         x2='end_dt:T',
-        y=alt.value(0),
+        y=alt.value(15), # Centered in the 60px area
         color=alt.Color('operation:N', 
-                        scale=alt.Scale(domain=['Landen', 'Starten'], 
-                                       range=['#1f77b4', '#ff7f0e']),
-                        legend=alt.Legend(title="Gebruik"))
+                        scale=alt.Scale(
+                            domain=['Landen', 'Starten', 'Geen informatie', 'Anchor'], 
+                            range=['#1f77b4', '#ff7f0e', '#999999', 'transparent']
+                        ),
+                        legend=alt.Legend(title="Gebruik", values=['Landen', 'Starten']))
     )
 
-    # Layer 3: Text labels
-    text = alt.Chart(active_df).mark_text(
+    # Text layer
+    text = base.transform_filter(
+        alt.FieldOneOfPredicate(field='operation', oneOf=['Landen', 'Starten'])
+    ).mark_text(
         align='center',
         baseline='middle',
         color='white',
@@ -163,12 +139,12 @@ def plot_runway_timeline(runway_df, plot_date):
         fontSize=12
     ).encode(
         x='mid_dt:T',
-        y=alt.value(0),
+        y=alt.value(15), # Centered in the 60px area
         text='direction:N'
     )
 
-    chart = (anchors + gap_bars + active_bars + text).properties(
-        height=100,
+    chart = (bars + text).properties(
+        height=68, # Reduced from 100
         width='container'
     )
     
@@ -211,26 +187,23 @@ def inject_analytics(path):
     st.components.v1.html(analytics_code, height=1)
 
 # Helper function for data freshness and coverage display
-def toon_laatste_update():
+def show_last_update():
     if not df.empty:
         laatste_update = pd.to_datetime(df['post_date']).max()
-        laatste_update_str = laatste_update.strftime('%d %B %Y %H:%M')
+        laatste_update_str = laatste_update.strftime('%d-%m-%Y %H:%M')
         
-        # Calculate coverage end (max date + max end_time)
-        # We find the row with the maximum date, then the maximum end_time within that date
         max_date = df['date'].max()
         max_time = df[df['date'] == max_date]['end_time'].max()
-        coverage_str = f"{max_date.strftime('%d %B %Y')} {max_time}"
+        coverage_str = f"{dutch_date(max_date)} {max_time}"
         
-        st.caption(f"Laatste update van bezoekbas.nl: {laatste_update_str}")
-        st.caption(f"Informatie beschikbaar tot: {coverage_str}")
+        st.caption(f"Laatste update van bezoekbas.nl: {laatste_update_str}  \nInformatie beschikbaar tot: {coverage_str}")
 
 # --- Page Functions ---
 
 def overview_page():
     inject_analytics("overzicht")
     st.title("Schiphol Baangebruik Overzicht")
-    toon_laatste_update()
+    show_last_update()
     st.markdown("Visualiseer de algemene baanactiviteit op basis van gegevens van `bezoekbas.nl`.")
 
     # Sidebar filters
@@ -311,20 +284,17 @@ def overview_page():
         effective_today = date.today()
         tomorrow = effective_today + timedelta(days=1)
         
-        # Ensure range covers at least tomorrow if data exists for it
         if max_date_val < tomorrow:
-            # Check if there is actually data for tomorrow before extending the max
             if not filtered_df[filtered_df['date'] == tomorrow].empty:
                 max_date_val = tomorrow
         
-        # If effective today is newer than our max data date, use that as max
         if max_date_val < effective_today:
             max_date_val = effective_today
             
         full_range = [max_date_val - timedelta(days=x) for x in range((max_date_val - min_date_val).days + 1)]
         
         for d in full_range:
-            date_display = f"{d.strftime('%d %B %Y')}"
+            date_display = dutch_date(d)
             if d == effective_today:
                 date_display += " (Vandaag)"
             elif d == tomorrow:
@@ -353,23 +323,27 @@ def overview_page():
 def runway_detail_page(runway_name):
     inject_analytics(runway_name.replace(" ", "_"))
     st.title(f"{runway_name}")
-    toon_laatste_update()
+    show_last_update()
     
     runway_df = df[df['runway_name'] == runway_name]
     today = date.today()
     tomorrow = today + timedelta(days=1)
     
-    st.write(f"Historisch gebruik voor de **{runway_name}**.")
+    st.write(f"Verwacht gebruik voor de **{runway_name}**. Deze informatie is gebaseerd op de \
+          meest actuele verwachting van Luchtverkeersleiding Nederland (LVNL) zoals gepubliceerd op \
+          [bezoekbas.nl](https://bezoekbas.nl/actuele-informatie)")
     
-    # --- Tomorrow's Section (Conditional) ---
+    # --- Tomorrow's Section ---
     tomorrow_df = runway_df[runway_df['date'] == tomorrow]
     if not tomorrow_df.empty:
-        st.markdown(f"### Morgen ({tomorrow.strftime('%d %B %Y')})")
+        st.markdown(f"### Morgen ({dutch_date(tomorrow)})")
         tomorrow_slots = merge_slots(tomorrow_df)
         chart = plot_runway_timeline(tomorrow_slots, tomorrow)
         if chart:
             st.altair_chart(chart, use_container_width=True)
         
+        # Consolidate slots into a single markdown block for compact spacing
+        # Note the two spaces before \n for a markdown line break
         slots_text = "  \n".join([
             f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Richting: {row['direction']})"
             for _, row in tomorrow_slots.iterrows()
@@ -378,16 +352,17 @@ def runway_detail_page(runway_name):
         st.divider()
 
     # --- Today's Section ---
-    st.markdown(f"### Vandaag ({today.strftime('%d %B %Y')})")
+    st.markdown(f"### Vandaag ({dutch_date(today)})")
     today_df = runway_df[runway_df['date'] == today]
     
-    # Always show the timeline chart for Today
     today_slots = merge_slots(today_df) if not today_df.empty else pd.DataFrame()
     chart = plot_runway_timeline(today_slots, today)
     if chart:
         st.altair_chart(chart, use_container_width=True)
 
     if not today_df.empty:
+        # Consolidate slots into a single markdown block for compact spacing
+        # Note the two spaces before \n for a markdown line break
         slots_text = "  \n".join([
             f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Richting: {row['direction']})"
             for _, row in today_slots.iterrows()
@@ -406,16 +381,17 @@ def runway_detail_page(runway_name):
         full_date_range = [yesterday - timedelta(days=x) for x in range((yesterday - min_date_val).days + 1)]
 
         for d in full_date_range:
-            st.markdown(f"### {d.strftime('%d %B %Y')}")
+            st.markdown(f"### {dutch_date(d)}")
             day_df = runway_df[runway_df['date'] == d]
             
-            # Always show the timeline chart for historical dates in the range
             merged_day_slots = merge_slots(day_df) if not day_df.empty else pd.DataFrame()
             chart = plot_runway_timeline(merged_day_slots, d)
             if chart:
                 st.altair_chart(chart, use_container_width=True)
 
             if not day_df.empty:
+                # Consolidate slots into a single markdown block for compact spacing
+                # Note the two spaces before \n for a markdown line break
                 slots_text = "  \n".join([
                     f"**{row['start_time']} - {row['end_time']}**: {row['operation']} (Richting: {row['direction']})"
                     for _, row in merged_day_slots.iterrows()
@@ -433,7 +409,6 @@ def runway_detail_page(runway_name):
 
 all_runway_names = sorted(df['runway_name'].unique())
 
-# Define base pages
 pages = {
     "Overzicht": [st.Page(overview_page, title="Overzicht", url_path="overzicht")],
     "Banen": [
@@ -450,11 +425,11 @@ pg = st.navigation(pages)
 # Data freshness metadata in sidebar
 if not df.empty:
     laatste_update = pd.to_datetime(df['post_date']).max()
-    laatste_update_str = laatste_update.strftime('%d %B %Y %H:%M')
+    laatste_update_str = laatste_update.strftime('%d-%m-%Y %H:%M')
     
     max_date = df['date'].max()
     max_time = df[df['date'] == max_date]['end_time'].max()
-    coverage_str = f"{max_date.strftime('%d %B %Y')} {max_time}"
+    coverage_str = f"{dutch_date(max_date)} {max_time}"
     
     st.sidebar.markdown(f"**Laatste update van bezoekbas.nl:**  \n{laatste_update_str}")
     st.sidebar.markdown(f"**Informatie beschikbaar tot:**  \n{coverage_str}")
