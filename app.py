@@ -97,6 +97,16 @@ def plot_runway_timeline(runway_df, plot_date):
 
     plot_df = pd.DataFrame(records)
     plot_df['mid_dt'] = plot_df['start_dt'] + (plot_df['end_dt'] - plot_df['start_dt']) / 2
+    
+    # Pre-calculate labels in Python to avoid complex Altair conditions
+    def get_label(row):
+        if row['operation'] == 'Geen informatie':
+            return 'Nog geen informatie beschikbaar'
+        if row['operation'] in ['Landen', 'Starten']:
+            return str(row.get('direction', ''))
+        return ''
+    
+    plot_df['display_label'] = plot_df.apply(get_label, axis=1)
 
     # Unified base chart
     base = alt.Chart(plot_df).encode(
@@ -129,9 +139,7 @@ def plot_runway_timeline(runway_df, plot_date):
     )
 
     # Text layer
-    text = base.transform_filter(
-        alt.FieldOneOfPredicate(field='operation', oneOf=['Landen', 'Starten'])
-    ).mark_text(
+    text = base.mark_text(
         align='center',
         baseline='middle',
         color='white',
@@ -140,7 +148,7 @@ def plot_runway_timeline(runway_df, plot_date):
     ).encode(
         x='mid_dt:T',
         y=alt.value(15), # Centered in the 60px area
-        text='direction:N'
+        text='display_label:N'
     )
 
     chart = (bars + text).properties(
@@ -432,7 +440,7 @@ if not df.empty:
     coverage_str = f"{dutch_date(max_date)} {max_time}"
     
     st.sidebar.markdown(f"**Laatste update van bezoekbas.nl:**  \n{laatste_update_str}")
-    st.sidebar.markdown(f"**Informatie beschikbaar tot:**  \n{coverage_str}")
+    st.sidebar.markdown(f"**Deze update bevat informatie tot:**  \n{coverage_str}")
     st.sidebar.divider()
 
 pg.run()
