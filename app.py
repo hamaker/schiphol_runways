@@ -194,24 +194,40 @@ def inject_analytics(path):
     """
     st.components.v1.html(analytics_code, height=1)
 
-# Helper function for data freshness and coverage display
-def show_last_update():
+# Helper function to calculate the next expected update time
+def get_next_update_time(last_update_dt):
+    h = last_update_dt.hour
+    if h < 10:
+        return "14:15"
+    elif h < 15:
+        return "20:45"
+    else:
+        return "09:45"
+
+# Helper function to render data freshness and coverage captions
+def render_freshness_metadata():
     if not df.empty:
-        laatste_update = pd.to_datetime(df['post_date']).max()
-        laatste_update_str = f"{dutch_date(laatste_update)} {laatste_update.strftime('%H:%M')}"
+        last_update_dt = pd.to_datetime(df['post_date']).max()
+        last_update_str = f"{dutch_date(last_update_dt)} {last_update_dt.strftime('%H:%M')}"
         
         max_date = df['date'].max()
         max_time = df[df['date'] == max_date]['end_time'].max()
         coverage_str = f"{dutch_date(max_date)} {max_time}"
         
-        st.caption(f"Laatste update van bezoekbas.nl: {laatste_update_str}  \nDeze update bevat informatie tot: {coverage_str}")
+        next_up = get_next_update_time(last_update_dt)
+        st.write(f"Volgende update wordt verwacht rond {next_up}")
+        st.caption(f"Laatste update van bezoekbas.nl: {last_update_str}  \nDeze update bevat informatie tot: {coverage_str}  \nVolgende update wordt verwacht rond {next_up}")
+        return last_update_dt
+    return None
 
 # --- Page Functions ---
 
 def overview_page():
     inject_analytics("overzicht")
     st.title("Schiphol Baangebruik Overzicht")
-    show_last_update()
+    
+    render_freshness_metadata()
+
     st.markdown("Visualiseer de algemene baanactiviteit op basis van gegevens van `bezoekbas.nl`.")
 
     # Sidebar filters
@@ -331,15 +347,21 @@ def overview_page():
 def runway_detail_page(runway_name):
     inject_analytics(runway_name.replace(" ", "_"))
     st.title(f"{runway_name}")
-    show_last_update()
-    
+
+    last_update_dt = render_freshness_metadata()
+
     runway_df = df[df['runway_name'] == runway_name]
     today = date.today()
     tomorrow = today + timedelta(days=1)
-    
+
     st.write(f"Verwacht gebruik voor de **{runway_name}**. Deze informatie is gebaseerd op de \
           meest actuele verwachting van Luchtverkeersleiding Nederland (LVNL) zoals gepubliceerd op \
           [bezoekbas.nl](https://bezoekbas.nl/actuele-informatie)")
+
+    if last_update_dt:
+        next_up = get_next_update_time(last_update_dt)
+        st.write(f"Volgende update wordt verwacht rond {next_up}")
+
     
     # --- Tomorrow's Section ---
     tomorrow_df = runway_df[runway_df['date'] == tomorrow]
@@ -438,9 +460,10 @@ if not df.empty:
     max_date = df['date'].max()
     max_time = df[df['date'] == max_date]['end_time'].max()
     coverage_str = f"{dutch_date(max_date)} {max_time}"
-    
+    next_up = get_next_update_time(laatste_update)
     st.sidebar.markdown(f"**Laatste update van bezoekbas.nl:**  \n{laatste_update_str}")
     st.sidebar.markdown(f"**Deze update bevat informatie tot:**  \n{coverage_str}")
+    st.sidebar.markdown(f"**Volgende update verwacht rond:**  \n{next_up}")
     st.sidebar.divider()
 
 pg.run()
