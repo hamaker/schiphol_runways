@@ -236,7 +236,51 @@ def overview_page():
 
     st.markdown("Schiphol baanactiviteit op basis van gegevens van `bezoekbas.nl`.")
 
-    # Sidebar filters
+    # In the overview, we show all data sorted by newest first
+    overview_df = df.sort_values(by=['date', 'start_time', 'post_date'], ascending=[False, False, False])
+
+    st.subheader("Dagelijks Overzicht")
+    if not overview_df.empty:
+        effective_today = date.today()
+        tomorrow = effective_today + timedelta(days=1)
+        
+        # Determine which dates to show (Today and Tomorrow if data exists)
+        dates_to_show = [effective_today]
+        if not overview_df[overview_df['date'] == tomorrow].empty:
+            dates_to_show.insert(0, tomorrow) # Show Tomorrow first if it exists
+            
+        for d in dates_to_show:
+            date_display = dutch_date(d)
+            if d == effective_today:
+                date_display += " (Vandaag)"
+            elif d == tomorrow:
+                date_display += " (Morgen)"
+            
+            st.markdown(f"#### {date_display}")
+            day_data = overview_df[overview_df['date'] == d]
+            
+            if not day_data.empty:
+                active_runways = sorted(day_data['runway_name'].unique())
+                for runway in active_runways:
+                    runway_day_data = day_data[day_data['runway_name'] == runway]
+                    merged_runway_slots = merge_slots(runway_day_data)
+                    chart = plot_runway_timeline(merged_runway_slots, d)
+                    if chart:
+                        st.markdown(f"*{runway}*")
+                        st.altair_chart(chart, use_container_width=True)
+            else:
+                st.write("*Geen activiteit geregistreerd voor deze datum.*")
+    else:
+        st.write("Geen gegevens beschikbaar.")
+
+def details_page():
+    inject_analytics("details")
+    st.title("Gefilterde Gebruiksgegevens")
+    
+    metadata = get_metadata()
+    render_metadata_captions(metadata)
+
+    # Sidebar filters (Duplicate for this page to allow interactive analysis)
     st.sidebar.header("Filters")
     min_date = df['date'].min()
     max_date = df['date'].max()
@@ -245,7 +289,7 @@ def overview_page():
         value=(min_date, max_date), 
         min_value=min_date, 
         max_value=max_date,
-        key="overview_date_range"
+        key="details_date_range"
     )
 
     all_runways = sorted(df['runway_name'].unique())
@@ -253,7 +297,7 @@ def overview_page():
         "Selecteer Banen", 
         options=all_runways, 
         default=all_runways,
-        key="overview_runway_select"
+        key="details_runway_select"
     )
 
     all_directions = sorted(df['direction'].unique())
@@ -261,7 +305,7 @@ def overview_page():
         "Selecteer Richtingen", 
         options=all_directions, 
         default=all_directions,
-        key="overview_direction_select"
+        key="details_direction_select"
     )
 
     all_operations = sorted(df['operation'].unique())
@@ -269,7 +313,7 @@ def overview_page():
         "Selecteer Gebruik", 
         options=all_operations, 
         default=all_operations,
-        key="overview_operation_select"
+        key="details_operation_select"
     )
 
     # Apply filters
@@ -292,9 +336,13 @@ def overview_page():
     col2.metric("Geselecteerde banen", len(selected_runways))
     col3.metric("Geselecteerd gebruik", len(selected_operations))
 
-    st.subheader("Gefilterde Gebruiksgegevens")
+    if not filtered_df.empty:
+        st.subheader("Gebruiksfrequentie per Baan")
+        usage_counts = filtered_df.groupby(['runway_name', 'operation']).size().reset_index(name='aantal')
+        st.bar_chart(usage_counts, x="runway_name", y="aantal", color="operation", use_container_width=True)
+
+    st.subheader("Details")
     display_cols = ['date', 'start_time', 'end_time', 'operation', 'runway_name', 'direction', 'post_date']
-    # Rename columns for the table
     display_df = filtered_df[display_cols].rename(columns={
         'date': 'Datum',
         'start_time': 'Start',
@@ -305,50 +353,6 @@ def overview_page():
         'post_date': 'Publicatiedatum'
     })
     st.dataframe(display_df, use_container_width=True)
-
-    st.subheader("Dagelijks Overzicht")
-    if not filtered_df.empty:
-        min_date_val = filtered_df['date'].min()
-        max_date_val = filtered_df['date'].max()
-        
-        effective_today = date.today()
-        tomorrow = effective_today + timedelta(days=1)
-        
-        if max_date_val < tomorrow:
-            if not filtered_df[filtered_df['date'] == tomorrow].empty:
-                max_date_val = tomorrow
-        
-        if max_date_val < effective_today:
-            max_date_val = effective_today
-            
-        full_range = [max_date_val - timedelta(days=x) for x in range((max_date_val - min_date_val).days + 1)]
-        
-        for d in full_range:
-            date_display = dutch_date(d)
-            if d == effective_today:
-                date_display += " (Vandaag)"
-            elif d == tomorrow:
-                date_display += " (Morgen)"
-            
-            st.markdown(f"#### {date_display}")
-            day_data = filtered_df[filtered_df['date'] == d]
-            
-            if not day_data.empty:
-                summary = day_data.groupby(['runway_name', 'operation']).size().reset_index()
-                # Merge items with compact line spacing and without bullets
-                summary_text = "  \n".join([
-                    f"**{row['runway_name']}**: {row['operation']}"
-                    for _, row in summary.iterrows()
-                ])
-                st.markdown(summary_text)
-            else:
-                st.write("*Geen activiteit geregistreerd voor de geselecteerde filters.*")
-
-        st.subheader("Gebruiksfrequentie per Baan")
-        usage_counts = filtered_df.groupby(['runway_name', 'operation']).size().reset_index(name='aantal')
-        st.bar_chart(usage_counts, x="runway_name", y="aantal", color="operation", use_container_width=True)
-    else:
-        st.write("Geen gegevens beschikbaar voor de huidige filters.")
 
 def runway_detail_page(runway_name):
     inject_analytics(runway_name.replace(" ", "_"))
@@ -442,7 +446,10 @@ def runway_detail_page(runway_name):
 all_runway_names = sorted(df['runway_name'].unique())
 
 pages = {
-    "Overzicht": [st.Page(overview_page, title="Overzicht", url_path="overzicht")],
+    "Algemeen": [
+        st.Page(overview_page, title="Overzicht", url_path="overzicht"),
+        st.Page(details_page, title="Details", url_path="details")
+    ],
     "Banen": [
         st.Page(
             lambda r=name: runway_detail_page(r), 
