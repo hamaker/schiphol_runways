@@ -212,6 +212,7 @@ def run_scraper(days_back=14):
 
             slug = post.get('post_name')
             post_date_str = post.get('post_date')
+            post_modified_str = post.get('post_modified', post_date_str)
             if not post_date_str: continue
 
             try:
@@ -222,8 +223,9 @@ def run_scraper(days_back=14):
                 stop_searching = True
                 break
             
-            # Restore API efficiency: Skip if already seen and in DB
-            if slug in seen_slugs:
+            # API efficiency: Skip if already seen AND it is older than 2 days
+            # We always re-process recent posts to catch same-slug updates.
+            if slug in seen_slugs and post_datetime < (datetime.now() - timedelta(days=2)):
                 cursor.execute("SELECT 1 FROM runway_usage WHERE slug = ? LIMIT 1", (slug,))
                 if cursor.fetchone():
                     continue
@@ -231,6 +233,7 @@ def run_scraper(days_back=14):
             posts_to_process.append({
                 'slug': slug,
                 'post_date_str': post_date_str,
+                'post_modified_str': post_modified_str,
                 'post_datetime': post_datetime,
                 'title': post.get('post_title')
             })
@@ -244,6 +247,7 @@ def run_scraper(days_back=14):
     for item in posts_to_process:
         slug = item['slug']
         post_date_str = item['post_date_str']
+        post_modified_str = item['post_modified_str']
         post_datetime = item['post_datetime']
         title = item['title']
         
@@ -258,6 +262,11 @@ def run_scraper(days_back=14):
             
             runway_info = extract_runway_info(content_html)
             
+            # Smart Overwrite: If we re-process a slug, or if another post has data for the same slot,
+            # we delete the "inferior" data. 
+            # 1. Delete all existing records for THIS slug before re-inserting (handles updates to the same post)
+            cursor.execute('DELETE FROM runway_usage WHERE slug = ?', (slug,))
+
             for line in runway_info:
                 slot_time, description = parse_slot(line)
                 if slot_time:
@@ -265,14 +274,13 @@ def run_scraper(days_back=14):
                     db_records = parse_usage_line(post_datetime, slot_time, description)
                     
                     for rec in db_records:
-                        # Smart Overwrite: Delete existing records for this specific timeslot and operation
-                        # if they come from an older post. This ensures that if the runways for a slot
-                        # have changed, the old ones are removed.
+                        # 2. Delete existing records from OTHER posts for this specific timeslot and operation
+                        # if they are older than the current post's MODIFIED date.
                         cursor.execute('''
                             DELETE FROM runway_usage 
                             WHERE date = ? AND start_time = ? AND end_time = ? AND operation = ?
                             AND post_date < ?
-                        ''', (rec['date'], rec['start_time'], rec['end_time'], rec['operation'], post_date_str))
+                        ''', (rec['date'], rec['start_time'], rec['end_time'], rec['operation'], post_modified_str))
 
                         cursor.execute('''
                             INSERT OR REPLACE INTO runway_usage 
@@ -280,18 +288,16 @@ def run_scraper(days_back=14):
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (rec['date'], rec['start_time'], rec['end_time'], 
                               rec['operation'], rec['runway_name'], rec['direction'], 
-                              post_date_str, slug))
+                              post_modified_str, slug))
                         
-                        # Also update the JSON state for markdown (grouped by the ACTUAL date of the slot)
+                        # Also update the JSON state for markdown
                         date_key = rec['date']
                         if date_key not in days:
-                            days[date_key] = {"title": title, "slots": {}, "last_updated": post_date_str}
+                            days[date_key] = {"title": title, "slots": {}, "last_updated": post_modified_str}
                         
-                        # For the markdown, we still want the original slot_time string for display
-                        # but we only update if it's a newer post for that day.
-                        if post_date_str >= days[date_key].get('last_updated', ''):
+                        if post_modified_str >= days[date_key].get('last_updated', ''):
                             days[date_key]['slots'][slot_time] = description
-                            days[date_key]['last_updated'] = post_date_str
+                            days[date_key]['last_updated'] = post_modified_str
                             days[date_key]['title'] = title
 
             seen_slugs.add(slug)
